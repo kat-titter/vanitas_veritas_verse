@@ -24,11 +24,12 @@
   canvas { position:fixed; inset:0; width:100%; height:100%; display:block; touch-action:none; cursor:crosshair; }
   h1 { position:fixed; left:28px; top:22px; margin:0; font:400 20px/1.1 var(--mono); letter-spacing:.42em; text-transform:uppercase;
     color:var(--bone); pointer-events:none; }
-  #code { position:fixed; left:28px; bottom:22px; margin:0; font:inherit; color:var(--dim); pointer-events:none; text-align:center;
+  #code { position:fixed; left:28px; bottom:22px; margin:0; font:inherit; color:var(--dim); pointer-events:none; text-align:left;
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis; text-shadow:0 0 4px var(--ink), 0 0 2px var(--ink); transition:opacity .8s; }
   #code #pr { color:var(--bone); }                                   /* the words are the dream's; the code around them stays quiet */
   #code #grip { display:block; }
-  #code.two { white-space:normal; text-wrap:balance; line-height:1.5; }
+  #code .ln { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; line-height:1.55; }   /* two lines at most: the prompt, then the trace blended in */
+  #code .tr { color:var(--bone); opacity:.62; }
   #dry { display:none; position:fixed; border:1px solid rgba(228,223,210,.30); border-radius:3.5%/4.6%; }
   body.nogpu #dry { display:block; }
   body.sink h1, body.sink #code { display:none; }                  /* in the stone: only the water */
@@ -58,7 +59,7 @@
 <script>
 (() => {
 'use strict';
-// veritas (sync.html): the web basin, one water with vanitas, the sink (sink == sync). The water is a machine dreaming: a spring (code/spring.py, on a GPU) writes a new prompt, dreams it, and walks the
+// veritas (sync.html): the web basin, one water with vanitas, the sink (sink == sync). The water is a machine dreaming: a spring (code/sink.py, on a GPU) writes a new prompt, dreams it, and walks the
 // latent space to the next, frame by frame; every frame pours in at the tap and runs to the drain. No GPU, no water, no dream.
 // Reach in, and the water under your hand goes where your hand goes, for a moment; then it slips through your fingers, down the drain.
 const canvas = document.getElementById('c'), title = document.getElementById('title');
@@ -67,7 +68,8 @@ const params = new URLSearchParams(location.search);
 if (params.has('sink')) document.body.classList.add('sink');
 if (params.has('doc')) document.body.classList.add('doc');
 const SPRING_HOME = '';                           // the spring's public address, once it has one; until then, on the web, the water is off
-const SPRING = params.has('spring') ? (params.get('spring') || 'feed/') : SPRING_HOME;
+let SPRING = params.has('spring') ? (params.get('spring') || 'feed/') : SPRING_HOME;
+if (!SPRING && !params.get('img')) fetch('spring.json', { cache:'no-store' }).then((r) => r.json()).then((j) => { if (j && j.feed) SPRING = j.feed; }).catch(() => {});   // on the public site: where the spring is now
 const SMALL = Math.min(innerWidth, innerHeight) < 600 || matchMedia('(pointer: coarse)').matches;
 const SIM = 256, PI_N = SMALL ? 24 : 36, BX = 0.46, BY = 0.345;   // the basin: a rectangle, 4:3 like the dreams
 let DYE = 1024, BIG = false;                       // the water's own resolution, set from the basin's size on screen
@@ -83,16 +85,17 @@ function layout(){
   Object.assign(codeEl.style, { left:`${view.cx - hw}px`, width:`${2*hw}px`, top:`${view.cy + hh + Math.min(28, (h/2 - hh)*0.35)}px`, bottom:'auto' });
   fitCode();
 }
-function fitCode(){                                   // one line, as wide as the basin at most: the type shrinks to fit; below 10 px (a phone), two balanced lines instead
-  codeEl.style.fontSize = ''; codeEl.classList.remove('two');
-  const base = parseFloat(getComputedStyle(codeEl).fontSize), w = codeEl.clientWidth, line = waterEl.getBoundingClientRect().width;
-  if (line > w && w > 0) { const f = base*w/line*0.98; if (f >= 10) codeEl.style.fontSize = f + 'px'; else { codeEl.classList.add('two'); codeEl.style.fontSize = '11px'; } }
+function fitCode(){                                   // two lines at most, as wide as the basin: the type shrinks to fit, to 10 px; past that a line ends in an ellipsis
+  codeEl.style.fontSize = '';
+  const base = parseFloat(getComputedStyle(codeEl).fontSize), w = codeEl.clientWidth, lines = [...waterEl.querySelectorAll('.ln')];
+  const line = lines.length ? Math.max(...lines.map((l) => l.scrollWidth)) : waterEl.getBoundingClientRect().width;
+  if (line > w && w > 0) codeEl.style.fontSize = Math.max(10, base*w/line*0.98) + 'px';
 }
 layout();
 { const px = 2*BX*view.S*view.dpr;              // a 4K screen gets the spring's full frames and water fine enough to show them
   DYE = SMALL ? 768 : px > 1800 ? 2048 : px > 1200 ? 1536 : 1024; BIG = px > 1400; }
 
-const gl = canvas.getContext('webgl2', { alpha:false, antialias:false, depth:false, stencil:false });
+const gl = canvas.getContext('webgl2', { alpha:false, antialias:false, depth:false, stencil:false, preserveDrawingBuffer:params.has('snap') });   // ?snap: the documents capture stills of the layers
 if (!gl || !gl.getExtension('EXT_color_buffer_float')) {           // no GPU: the tap is dry
   document.body.classList.add('nogpu'); addEventListener('resize', layout); return;
 }
@@ -244,7 +247,7 @@ void main(){
 display: `
 uniform sampler2D uDye;
 uniform vec2 uCenter, uRes, uCursor, uTapQ;
-uniform float uS, uTime, uCursorOn, uHold, uGrip, uWater, uPlug, uDrip;
+uniform float uS, uTime, uCursorOn, uHold, uGrip, uWater, uPlug, uDrip, uGlass;
 uniform vec4 uRQ[4]; uniform float uRN;          // other hands: where (basin units), grip, and 1 if the hand is at the sink
 uniform vec4 uBub[16]; uniform float uBs[16];       // uBs: each bubble's own seed, for its wobble and the way it tears                              // soap bubbles on the water: centre, radius, how present (they swell slowly, then pop)
 const vec3 BONE = vec3(0.95,0.91,0.82);
@@ -257,7 +260,7 @@ void main(){
   if (sd < 0.004) {
     vec2 hq = q-(uCursor-uCenter)/uS;
     float pool = smoothstep(0.045+0.05*uGrip, 0.012, length(hq))*uCursorOn*uHold;   // under the hand, the glass lies flat
-    float L = 1.-pool*smoothstep(0., -0.08, sd);
+    float L = (1.-pool*smoothstep(0., -0.08, sd))*uGlass;   // uGlass 0: the water without its ribbed glass and wet light
     float fx = q.x*NR, fi = floor(fx), s = fx-fi, tooth = hash1(fi);
     vec2 ql = vec2(mix(q.x, (fi+0.5+(s-0.5)*0.46)/NR, 0.24*L), q.y+(tooth-0.5)*0.003*L);   // ribbed glass: the dream reads through it
     { float rl = length(ql); ql += ql/max(rl, 1e-4)*0.00085/max(rl, RD*0.9); }    // light bent round the hole
@@ -266,18 +269,20 @@ void main(){
       vec2 dq = ql-bb.xy; float an = atan(dq.y, dq.x), sd_ = uBs[i];
       float wob = 1. + 0.14*sin(2.*an + sd_*6.3 + uTime*0.55) + 0.08*sin(3.*an + sd_*17. - uTime*0.4) + 0.05*sin(5.*an + sd_*29. + uTime*0.9);   // never round: a glob that wobbles
       float t = length(dq)/(bb.z*wob);
-      if (bb.w < 0.) {                                                            // popping, slowly: the skin tears, droplets spill and slow, and it all melts back into the water
-        float k = -bb.w, gone = 1. - k, ease = 1. - (1. - gone)*(1. - gone);
-        if (t < 1.) ql = bb.xy + dq*mix(1., mix(0.38, 1., ease), 1. - t*t);       // the dome sinks back into the picture
-        float tear = smoothstep(0.15, 0.95, 0.5 + 0.5*sin(an*3. + sd_*40. + gone*2.)*sin(an*5. - sd_*23.));
-        men += k*0.6*smoothstep(0.35, 0., abs(t - 1.1 - 0.15*ease));               // the ring of the surface, spreading and flattening
-        rimL += 0.9*k*tear*smoothstep(0.12 + 0.1*ease, 0., abs(t - 1. - 0.25*ease)); // shreds of the old skin, sliding outward
-        for (int j = 0; j < 3; j++) {                                             // droplets in 16 sectors: some fly, most fall short, all slow and blur as they melt
-          float n = 16., sec = floor((an + 3.14159)*n/6.28318), h = fract(sin(sec*12.99 + sd_*78.23 + float(j)*31.7)*43758.5);
-          if (h < 0.4) continue;
-          float ca = (sec + 0.5 + (h - 0.7)*0.6)/n*6.28318 - 3.14159, rr = (0.95 + (0.9*h*h + 0.25*float(j))*ease)*bb.z;
-          float dd = length(dq - vec2(cos(ca), sin(ca))*rr), sz = bb.z*(0.03 + 0.07*fract(h*7.3))*(0.6 + 0.9*ease);
-          rimL += 1.2*k*smoothstep(sz, sz*0.2, dd); }
+      if (bb.w < 0.) {                                                            // popping as goo: the skin sags, oozes out in a few thick strands, and melts back into the water
+        float k = -bb.w, gone = 1. - k, ease = gone*gone*(3. - 2.*gone);          // slow to start, slow to finish
+        if (t < 1.) ql = bb.xy + dq*mix(1., mix(0.38, 1., ease), 1. - t*t);       // the dome slumps back into the picture
+        float tear = smoothstep(0.1, 0.9, 0.5 + 0.5*sin(an*3. + sd_*40. + gone*1.2)*sin(an*2. - sd_*23.));
+        men += k*0.55*smoothstep(0.4, 0., abs(t - 1.1 - 0.08*ease));               // the ring of the surface, relaxing
+        rimL += 0.6*k*tear*smoothstep(0.2 + 0.18*ease, 0., abs(t - 1. - 0.1*ease)); // the old skin, soft and sagging, barely moving
+        for (int j = 0; j < 2; j++) {                                             // strands in 10 sectors: a few ooze out a little way, thick at the root, and soften as they melt
+          float n = 10., sec = floor((an + 3.14159)*n/6.28318), h = fract(sin(sec*12.99 + sd_*78.23 + float(j)*31.7)*43758.5);
+          if (h < 0.55) continue;
+          vec2 dir = vec2(cos((sec + 0.5 + (h - 0.75)*0.5)/n*6.28318 - 3.14159), sin((sec + 0.5 + (h - 0.75)*0.5)/n*6.28318 - 3.14159));
+          vec2 a0 = dir*bb.z*0.9, a1 = dir*(0.95 + (0.3*h + 0.1*float(j))*ease)*bb.z;
+          vec2 pa = dq - a0, ba = a1 - a0; float hh = clamp(dot(pa, ba)/max(dot(ba, ba), 1e-8), 0., 1.);
+          float dd = length(pa - ba*hh), sz = bb.z*(0.05 + 0.06*fract(h*7.3))*mix(1., 0.55, hh)*(0.8 + 0.7*ease);
+          rimL += 0.8*k*smoothstep(sz*1.3, 0., dd); }
         continue; }
       if (t < 1.) { ql = bb.xy + dq*mix(mix(1., 0.38, bb.w), 1., t*t*t); film = max(film, bb.w*(1.-t*t)); }   // a dome of the dream itself, swollen
       else if (t < 1.3) ql -= dq/max(length(dq), 1e-4)*bb.z*0.05*bb.w*(1.3-t);                                   // the surface pulled up round it
@@ -408,12 +413,12 @@ async function poll(){
     if (first && Date.now()/1000 - j.t > STALE()/1000) return true;     // a spring that stopped long ago: no water yet
     live.every = Math.max(0.6, Math.min(8, +j.every || 2)); live.prompt = String(j.prompt || '').slice(0, 160);
     const file = !BIG && j.small ? j.small : j.frame;                // 2560 x 1920 for big screens, 1280 x 960 otherwise
-    const im = new Image(); im.crossOrigin = 'anonymous'; im.onload = () => upload(im); im.src = new URL(file, base).href;
+    const im = new Image(); im.crossOrigin = 'anonymous'; const s = j.seq; im.onload = () => { if (s === live.seq) upload(im); };   // a slow old frame never lands after a newer one im.src = new URL(file, base).href;
     return true;
   } catch (e) { return false; }
 }
 let pollWait = 1200;                                   // a spring that does not answer is asked less often
-const IMG = params.get('img'), BUBBLES = params.get('bubbles') !== '0';   // ?img=<picture>: pour one picture, no spring (the documents use it to show the water's layers); ?bubbles=0: none
+const IMG = params.get('img'), BUBBLES = params.get('bubbles') !== '0', GLASS = params.get('glass') === '0' ? 0 : 1;   // ?glass=0: no glass (the documents show the layers one by one)   // ?img=<picture>: pour one picture, no spring (the documents use it to show the water's layers); ?bubbles=0: none
 if (IMG) { const im = new Image(); im.crossOrigin = 'anonymous'; im.onload = () => { upload(im); live.prompt = ''; }; im.src = new URL(IMG, location.href).href; }
 else (function tick(){ poll().then((ok) => { pollWait = ok ? 1200 : Math.min(15000, pollWait*1.6); setTimeout(tick, pollWait); }); })();
 
@@ -541,7 +546,7 @@ canvas.addEventListener('pointerup', (ev) => { reach(false); if (ev.pointerType 
 canvas.addEventListener('pointercancel', () => { reach(false); hand.on = false; });
 canvas.addEventListener('pointerleave', () => { if (!hand.down) hand.on = false; });
 canvas.addEventListener('contextmenu', (ev) => ev.preventDefault());
-// the space bar: on the web, the plug; at the sink, the lever, which is the tap: down, the spring rests and every basin drains
+// the space bar: on the web, the plug; at the sink, the lever, which is the tap: down, generation stops, no data flows, and every basin drains
 let lever = false;
 function tap(on){
   lever = !on; live.tap = on;
@@ -549,15 +554,15 @@ function tap(on){
 }
 addEventListener('keydown', (e) => { if (e.code === 'Space') { e.preventDefault(); if (!e.repeat) { if (SRC === 'sink') tap(false); else plug = true; } } });
 addEventListener('keyup', (e) => { if (e.code === 'Space') { if (SRC === 'sink') tap(true); else { plug = false; gulp = 1; } } });
-addEventListener('blur', () => { reach(false); if (plug) { plug = false; gulp = 1; } });
+addEventListener('blur', () => { reach(false); if (lever) tap(true); if (plug) { plug = false; gulp = 1; } });   // a lost window never leaves the sink off
 
 const Q0 = 0.005, H = 1/SIM;                         // a slow pour: the water moves just enough to notice up close
 function step(dt){
   const now = performance.now(), fresh = live.tap && live.have && (IMG || now-live.lastNew < STALE());
-  water += ((fresh ? 1 : 0)-water)*(1-Math.exp(-dt/(fresh ? 1.6 : 5)));
+  water += ((fresh ? 1 : 0)-water)*(1-Math.exp(-dt/(fresh ? 1.6 : 10)));   // off: the pour slows over about ten seconds
   if (fresh && !lastWaterOn) flood = 1;              // it floods back
   lastWaterOn = fresh;
-  left = water > 0.5 ? 1 : left*Math.exp(-dt/22);     // the water off: what is left runs out
+  left = water > 0.5 ? 1 : left*Math.exp(-dt/45);     // the water off: what is left runs out, slowly
   drainAmt = (1 - water)*left;                         // no water: what is left swirls down the drain, then the basin is black
   if (water < 0.2 && now-dripAt > 3600 + 2400*Math.sin(simTime)) { dripAt = now; drip = 0; }
   drip += dt;
@@ -585,7 +590,7 @@ function step(dt){
   u = use(P.project); bind(u.uP, prs.read.tex); bind(u.uVel, vel.read.tex); gl.uniform1f(u.uH, H); draw(vel.write); vel.swap();
   u = use(P.dye); bind(u.uVel, vel.read.tex); bind(u.uDye, dye.read.tex); bind(u.uImgA, live.A); bind(u.uImgB, live.B);
   gl.uniform1f(u.uDt, dt); gl.uniform1f(u.uMix, live.mix); gl.uniform1f(u.uPour, water*(0.05 + 0.3*Math.pow(0.5 + 0.5*Math.sin(simTime*2*Math.PI/60 - 1.2), 2))); gl.uniform1f(u.uTapPour, 0.5*water);
-  gl.uniform1f(u.uFade, 0.015 + 0.02*(1-water) + 0.4*(1-water)*(1-left)); gl.uniform1f(u.uDrainR, 1.6 + 7*drainAmt); gl.uniform2f(u.uTap, tap[0], tap[1]); gl.uniform4f(u.uGrab, hand.u, hand.v, grip, 0.06);
+  gl.uniform1f(u.uFade, 0.015 + 0.01*(1-water) + 0.18*(1-water)*(1-left)); gl.uniform1f(u.uDrainR, 1.6 + 7*drainAmt); gl.uniform2f(u.uTap, tap[0], tap[1]); gl.uniform4f(u.uGrab, hand.u, hand.v, grip, 0.06);
   draw(dye.write); dye.swap();
   flood *= Math.exp(-dt/2.5); gulp *= Math.exp(-dt/1.5);
   simTime += dt;
@@ -596,10 +601,10 @@ function step(dt){
 // Only while the water runs; never more than sixteen.
 const NB = 16, BUB = new Float32Array(NB*4), BS = new Float32Array(NB), bubs = []; let nextBub = 0, lastBub = 0;
 const vents = [0, 1, 2].map(() => ({ x:(Math.random()*2-1)*BX*0.6, y:(Math.random()*2-1)*BY*0.6, a:Math.random()*6.283 }));   // a cauldron: bubbles keep coming up where it is hottest
-const POP = 1.6;                                      // a slow pop: about a second and a half to melt back
+const POP = 3.2;                                      // a gooey pop: about three seconds to melt back
 function popBub(b, t){ if (b.pop) return; b.pop = t;
   const dl = Math.hypot(b.x, b.y) || 1;                              // a small splash where it broke
-  stir.x = 0.5 + b.x; stir.y = 0.5 + b.y; stir.vx += 0.12*b.x/dl + 0.05*(Math.random() - 0.5); stir.vy += 0.12*b.y/dl + 0.05*(Math.random() - 0.5); }
+  stir.x = 0.5 + b.x; stir.y = 0.5 + b.y; stir.vx += 0.03*b.x/dl + 0.012*(Math.random() - 0.5); stir.vy += 0.03*b.y/dl + 0.012*(Math.random() - 0.5); }
 function popAt(u, v){ const t = performance.now()/1000; let hit = false;
   bubs.forEach((b) => { if (!b.pop && Math.hypot(u-0.5-b.x, v-0.5-b.y) < b.r*1.1) { popBub(b, t); hit = true; } }); return hit; }
 function blow(){
@@ -618,13 +623,13 @@ function blow(){
     if (!b.pop) {                                                       // carried: a slow turn round the drain, a slower pull into it
       const d = Math.hypot(b.x, b.y) || 1, w = 0.012*water + 0.004 + 0.06*drainAmt, pull = 0.0015 + 0.03*drainAmt;   // draining: round and into the drain
       const nx = b.x - (b.y*w + b.x/d*pull)*dt, ny = b.y + (b.x*w - b.y/d*pull)*dt; b.x = nx; b.y = ny;
-      if (a >= 1 || d < 0.045 || (water < 0.3 && left < 0.25 && Math.random() < dt*0.8)) popBub(b, t); }   // no water, no bubbles: they pop as it drains
+      if (a >= 1 || d < 0.045 || (water < 0.3 && left < 0.25 && Math.random() < dt*0.25)) popBub(b, t); }   // no water, no bubbles: they pop as it drains
     if (b.pop && t - b.pop > POP) { bubs.splice(i, 1); continue; } }
   bubs.forEach((b, i) => { BS[i] = b.seed; const age = Math.max(0, t - b.born), a = Math.min(1, age/b.life);
     const rise = Math.min(1, age/Math.min(7, b.life*0.25)), up = rise*rise*(3 - 2*rise);          // surfacing: the first seven seconds
     const bloom = 1 - Math.pow(1 - Math.min(1, a/0.6), 3);
     b.r = b.R*(0.12 + 0.88*Math.max(up*0.55, bloom));
-    if (b.pop) { const k = Math.min(1, (t - b.pop)/POP); BUB.set([b.x, b.y, b.r*(1 + 0.35*Math.sqrt(k)), -Math.pow(1 - k, 0.8)], i*4); }
+    if (b.pop) { const k = Math.min(1, (t - b.pop)/POP), m = k*k*(3 - 2*k); BUB.set([b.x, b.y, b.r*(1 + 0.18*m), -(1 - m)], i*4); }
     else BUB.set([b.x, b.y, b.r, 0.08 + 0.92*up], i*4); });
 }
 function render(){
@@ -634,7 +639,7 @@ function render(){
   gl.uniform2f(u.uCenter, view.cx*d, (view.h-view.cy)*d); gl.uniform2f(u.uRes, pw, ph); gl.uniform1f(u.uS, view.S*d);
   gl.uniform2f(u.uCursor, hand.x*d, (view.h-hand.y)*d); gl.uniform1f(u.uCursorOn, hand.on ? 1 : 0);
   gl.uniform2f(u.uTapQ, TAP[0]-0.5, TAP[1]-0.5); gl.uniform1f(u.uTime, simTime);
-  gl.uniform1f(u.uHold, holdAmt); gl.uniform1f(u.uGrip, grip); gl.uniform1f(u.uWater, water); gl.uniform1f(u.uPlug, plugAmt); gl.uniform1f(u.uDrip, drip);
+  gl.uniform1f(u.uGlass, GLASS); gl.uniform1f(u.uHold, holdAmt); gl.uniform1f(u.uGrip, grip); gl.uniform1f(u.uWater, water); gl.uniform1f(u.uPlug, plugAmt); gl.uniform1f(u.uDrip, drip);
   gl.uniform4fv(u['uRQ[0]'], RQ); gl.uniform1f(u.uRN, rn);
   draw(null);
 }
@@ -642,10 +647,13 @@ function render(){
 let lastText = '';
 function words(){
   const t = water > 0.5 && live.prompt ? `water = dream("${live.prompt}")` : 'water = None';
-  const g = hand.down ? `\ngrip = ${grip.toFixed(2)}` : '';
-  if (t + g !== lastText) {
-    lastText = t + g; gripEl.textContent = g.trim();
-    if (water > 0.5 && live.prompt) { waterEl.textContent = 'water = dream("'; const pr = document.createElement('span'); pr.id = 'pr'; pr.textContent = live.prompt; waterEl.append(pr, '")'); }
+  if (t !== lastText) {                               // two lines at most, rebuilt only when the words change
+    lastText = t;
+    if (water > 0.5 && live.prompt) {                  // the prompt on one line, the second prompt blended into it (after '~') on the next
+      const [a, b] = live.prompt.split(' ~ '), mk = (cls, txt) => { const e = document.createElement('span'); e.className = cls; e.textContent = txt; return e; };
+      waterEl.textContent = '';
+      const l1 = mk('ln', 'water = dream("'), pr = mk('', a); pr.id = 'pr'; l1.append(pr, b ? '' : '")'); waterEl.append(l1);
+      if (b) { const l2 = mk('ln', '~ '); l2.append(mk('tr', b), '")'); waterEl.append(l2); } }
     else waterEl.textContent = t;
     fitCode(); }
 }
@@ -657,11 +665,13 @@ function frame(now){
   plugAmt += ((plug ? 1 : 0)-plugAmt)*(1-Math.exp(-dt/0.15));
   if (dt > 0) step(dt);
   render(); words(); send(false);
-  requestAnimationFrame(frame);
+  nextFrame(frame);
 }
 addEventListener('resize', layout);
+window.__snap = (q) => canvas.toDataURL('image/jpeg', q || 0.82);
 window.__basin = { get t(){ return simTime; }, get water(){ return water; }, get seq(){ return live.seq; }, get grip(){ return grip; }, get prompt(){ return live.prompt; }, get have(){ return live.have; }, get others(){ return net.remote.size; }, get net(){ return net.socks.filter((x) => x.open).length; } };
-requestAnimationFrame(frame);
+const nextFrame = params.has('snap') ? (f) => setTimeout(() => f(performance.now()), 16) : requestAnimationFrame;   // ?snap runs on timers, so stills render even off screen
+nextFrame(frame);
 netStart();
 })();
 </script>
